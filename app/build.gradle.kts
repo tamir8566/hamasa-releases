@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -32,7 +34,7 @@ android {
     // The keystore and its passwords are NOT in this public repository: the build workflow fetches
     // app/hamasa.keystore and app/signing.properties from the owner's private repository (.github/workflows).
     val signingFile = file("signing.properties")
-    val signingProps = java.util.Properties()
+    val signingProps = Properties()
     if (signingFile.exists()) signingFile.inputStream().use { signingProps.load(it) }
     val hasSigning = signingFile.exists() && file("hamasa.keystore").exists()
     signingConfigs {
