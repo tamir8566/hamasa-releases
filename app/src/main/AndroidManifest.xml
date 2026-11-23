@@ -1,0 +1,181 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- the chef keeps its connection while the app is left (data/ai/ChefKeepAliveService) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- the rest timer as a small circle over other apps (RestBubbleService); granted by hand in settings -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Android 12+: self-updates without the confirmation once this app is its own installer of record (docs/update.md) -->
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
+    <!-- Exact end-of-rest beep (ui/workout/RestAlarmReceiver): the rest timer is a user-started timer, which is what
+         USE_EXACT_ALARM is for (Android 13+, granted at install). Android 12/12L have only SCHEDULE_EXACT_ALARM.
+         Without either, RestAlerts falls back to an inexact while-idle alarm. -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <!-- Sleep from the phone's own screen-off night (data/health/PhoneSleep): the user turns on "usage access" once -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission
+        android:name="android.permission.SCHEDULE_EXACT_ALARM"
+        android:maxSdkVersion="32" />
+
+    <!-- Stage 3: Galaxy Watch data through Health Connect, read only (data/health, docs/watch.md). -->
+    <uses-permission android:name="android.permission.health.READ_STEPS" />
+    <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.READ_EXERCISE" />
+    <uses-permission android:name="android.permission.health.READ_DISTANCE" />
+    <uses-permission android:name="android.permission.health.READ_TOTAL_CALORIES_BURNED" />
+    <uses-permission android:name="android.permission.health.READ_ACTIVE_CALORIES_BURNED" />
+    <!-- optional: daily resting heart rate (coach fatigue signal, data/health/RestingHr) -->
+    <uses-permission android:name="android.permission.health.READ_RESTING_HEART_RATE" />
+    <!-- optional: last night's sleep (coach / morning roll sleep slider, data/health/WatchSleep) -->
+    <uses-permission android:name="android.permission.health.READ_SLEEP" />
+    <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND" />
+
+    <!-- Is Health Connect installed (Android 13 and below, where it is a separate app) -->
+    <queries>
+        <package android:name="com.google.android.apps.healthdata" />
+    </queries>
+
+    <application
+        android:name=".HamasaApp"
+        android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Hamasa">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Spotify login redirect (data/music/SpotifyConfig.REDIRECT_URI = com.tamir.hamasa://spotify-callback) -->
+        <activity
+            android:name=".data.music.SpotifyCallbackActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="spotify-callback"
+                    android:scheme="com.tamir.hamasa" />
+            </intent-filter>
+        </activity>
+
+        <!-- Health Connect privacy rationale: Android 13 and below -->
+        <activity
+            android:name=".ui.watch.WatchRationaleActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Hamasa.Main">
+            <intent-filter>
+                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+            </intent-filter>
+        </activity>
+
+        <!-- Health Connect privacy rationale: Android 14 and above -->
+        <activity-alias
+            android:name="ViewPermissionUsageActivity"
+            android:exported="true"
+            android:targetActivity=".ui.watch.WatchRationaleActivity"
+            android:permission="android.permission.START_VIEW_PERMISSION_USAGE">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
+            </intent-filter>
+        </activity-alias>
+
+        <service android:name=".ui.workout.RestBubbleService" android:exported="false" />
+        <service android:name=".data.ai.ChefKeepAliveService" android:exported="false" android:foregroundServiceType="dataSync" />
+
+        <receiver
+            android:name=".widget.HamasaWidgetProvider"
+            android:exported="false"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_hamasa_info" />
+        </receiver>
+
+        <!-- Small widget: one Shambiuluk line per day (widget/DailyLineWidgetProvider) -->
+        <receiver
+            android:name=".widget.DailyLineWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_line_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_daily_line_info" />
+        </receiver>
+
+        <!-- End-of-rest beep alarm (ui/workout/RestAlerts.show); explicit PendingIntent only -->
+        <receiver
+            android:name=".ui.workout.RestAlarmReceiver"
+            android:exported="false" />
+
+        <!-- "סט הושלם" on the workout notification, also mirrored on the watch (ui/workout/WristCard); explicit only -->
+        <receiver
+            android:name=".ui.workout.WristActionReceiver"
+            android:exported="false" />
+
+        <!-- PackageInstaller session status for self-updates (data/update/SilentInstaller); explicit intent only -->
+        <receiver
+            android:name=".data.update.UpdateInstallReceiver"
+            android:exported="false" />
+
+        <!-- The new version after a self-update: "עודכן לגרסה N" notification + workers (data/update/UpdateReplacedReceiver) -->
+        <receiver
+            android:name=".data.update.UpdateReplacedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge"
+            xmlns:tools="http://schemas.android.com/tools">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
+    </application>
+</manifest>

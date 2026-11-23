@@ -1,0 +1,164 @@
+name: Build APK
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+permissions:
+  contents: write
+  issues: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Build numbers continue after the last version of the old private repository (202): run 1 here is version 301.
+      - name: Build number
+        run: echo "BUILD_NO=$((GITHUB_RUN_NUMBER + 300))" >> $GITHUB_ENV
+      # The signing key, its passwords and the Samsung Health SDK file are not in this public repository. They are read
+      # from the owner's private repository with the secret PRIVATE_FILES_TOKEN (a fine-grained token, contents: read
+      # on that repository only). Without them nothing is built, so a wrongly signed APK can never be published.
+      - name: Fetch private build files
+        env:
+          TOKEN: ${{ secrets.PRIVATE_FILES_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then echo "::error::secret PRIVATE_FILES_TOKEN is missing"; exit 1; fi
+          mkdir -p app/libs
+          for f in app/hamasa.keystore app/signing.properties app/libs/samsung-health-data-api-1.1.0.aar; do
+            code=$(curl -sS -L -m 120 -o "$f" -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github.raw" \
+              "https://api.github.com/repos/tamir8566/fitness_app/contents/$f")
+            if [ "$code" != "200" ]; then echo "::error::could not fetch $f (HTTP $code)"; rm -f "$f"; exit 1; fi
+          done
+          ls -la app/hamasa.keystore app/libs
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build debug APK
+        id: build
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon assembleDebug -PbuildNumber=${{ env.BUILD_NO }} 2>&1 | tee build.log
+      - name: Report errors
+        if: failure()
+        run: |
+          grep -E "^e: |error:|What went wrong|Execution failed|Unresolved|Type mismatch|Cannot|does not|FAILED" build.log | head -80 > errors.txt || true
+          echo "## Build errors" >> $GITHUB_STEP_SUMMARY
+          cat errors.txt >> $GITHUB_STEP_SUMMARY
+          while IFS= read -r line; do echo "::error::$line"; done < errors.txt
+          gh issue create --title "build-errors-${{ env.BUILD_NO }}" --body-file errors.txt || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Actions artifact storage can hit its quota; the APK and screenshots also live on the releases, so never fail here
+      - uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: HamasaHagadol-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+      # Screenshots of every screen, rendered on the JVM (Robolectric + Roborazzi, no emulator).
+      # Never blocks the release: a failure here only means fewer (or placeholder) images.
+      # Failed tests do not fail this step (they are reported below); only a HANG does: after 25 minutes the run is
+      # stopped and tried once more from scratch. If it hangs twice, NO release is published (issue "tests-stuck-N").
+      - name: Render screenshots
+        id: screenshots
+        continue-on-error: true
+        timeout-minutes: 25
+        run: |
+          ./gradlew --no-daemon testDebugUnitTest -Proborazzi.test.record=true -PbuildNumber=${{ env.BUILD_NO }} 2>&1 | tee screenshots.log || true
+          echo done > tests_finished
+      - name: Render screenshots (second try after a hang)
+        id: screenshots_retry
+        if: hashFiles('tests_finished') == ''
+        continue-on-error: true
+        timeout-minutes: 25
+        run: |
+          pkill -f GradleDaemon || true
+          rm -rf app/build/test-results app/build/screenshots
+          ./gradlew --no-daemon testDebugUnitTest -Proborazzi.test.record=true -PbuildNumber=${{ env.BUILD_NO }} 2>&1 | tee screenshots.log || true
+          echo done > tests_finished
+      - name: Tests stuck twice
+        if: hashFiles('tests_finished') == ''
+        run: |
+          grep -E "(STARTED|PASSED|FAILED)$" screenshots.log | tail -5 > stuck.txt || true
+          echo "## Tests hung twice: no release" >> $GITHUB_STEP_SUMMARY
+          cat stuck.txt >> $GITHUB_STEP_SUMMARY
+          gh issue create --title "tests-stuck-${{ env.BUILD_NO }}" --body-file stuck.txt || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # "Clicking agent": interaction flows (app/src/test/.../flows). A failed flow never blocks the release,
+      # but it is reported in the summary, in screenshots.zip (_flows.txt) and as an issue "flow-check-N".
+      - name: Flow report
+        if: always()
+        run: |
+          mkdir -p app/build/screenshots
+          python3 - <<'PY' > app/build/screenshots/_flows.txt || true
+          import glob, xml.etree.ElementTree as ET
+          rows = []
+          for f in glob.glob('app/build/test-results/testDebugUnitTest/*flows*.xml'):
+              for tc in ET.parse(f).getroot().iter('testcase'):
+                  fail = tc.find('failure') if tc.find('failure') is not None else tc.find('error')
+                  skip = tc.find('skipped') is not None
+                  st = 'SKIP' if skip else ('FAIL' if fail is not None else 'PASS')
+                  msg = (fail.get('message') or '')[:300].replace('\n', ' ') if fail is not None else ''
+                  rows.append(f"{st}  {tc.get('name')}  {msg}")
+          print('\n'.join(rows) if rows else 'NO FLOW RESULTS')
+          PY
+          cat app/build/screenshots/_flows.txt
+          echo "## Flows" >> $GITHUB_STEP_SUMMARY
+          sed 's/^/- /' app/build/screenshots/_flows.txt >> $GITHUB_STEP_SUMMARY
+          if grep -q '^FAIL' app/build/screenshots/_flows.txt; then
+            gh issue create --title "flow-check-${{ env.BUILD_NO }}" --body-file app/build/screenshots/_flows.txt || true
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Zip screenshots
+        run: |
+          mkdir -p app/build/screenshots
+          grep -E "^e: |error:|What went wrong|Execution failed|Unresolved|Type mismatch|FAILED|Exception" screenshots.log | head -120 > app/build/screenshots/_screenshot-test-log.txt || true
+          cd app/build/screenshots
+          zip -r ../../../screenshots.zip . || true
+          cd ../../..
+          ls -la screenshots.zip || true
+      - name: Screenshot summary
+        run: |
+          echo "## Screenshots" >> $GITHUB_STEP_SUMMARY
+          echo "Render step outcome: ${{ steps.screenshots.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "Images: $(ls app/build/screenshots/*.png 2>/dev/null | wc -l)" >> $GITHUB_STEP_SUMMARY
+          if ls app/build/screenshots/*.error.txt >/dev/null 2>&1; then
+            echo "Screens that failed to render:" >> $GITHUB_STEP_SUMMARY
+            for f in app/build/screenshots/*.error.txt; do echo "- $(basename "$f" .error.txt)" >> $GITHUB_STEP_SUMMARY; done
+          fi
+      - uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: HamasaHagadol-screenshots
+          path: screenshots.zip
+          if-no-files-found: ignore
+      # A test-only run keeps its screenshots + flow report reachable as a pre-release "check-N" (no APK, never "latest",
+      # so no phone ever installs from it).
+      - name: Publish check results
+        if: hashFiles('tests_finished') != '' && !(github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release]'))
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: check-${{ env.BUILD_NO }}
+          name: "בדיקה ${{ env.BUILD_NO }}"
+          prerelease: true
+          make_latest: false
+          files: |
+            screenshots.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # A push only BUILDS and TESTS (screenshots + flows, reported as usual). A version is published only when
+      # asked: the "Build APK" workflow run by hand, or a commit message containing [release].
+      - name: Publish release
+        if: hashFiles('tests_finished') != '' && (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release]'))
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ env.BUILD_NO }}
+          name: "גרסה ${{ env.BUILD_NO }}"
+          make_latest: true
+          files: |
+            app/build/outputs/apk/debug/app-debug.apk
+            screenshots.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

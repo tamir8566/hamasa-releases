@@ -1,0 +1,63 @@
+name: Flows only
+on:
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: "Gradle --tests filter"
+        required: false
+        default: "com.tamir.hamasa.flows.*"
+permissions:
+  contents: read
+  issues: write
+jobs:
+  flows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      # The signing key, its passwords and the Samsung Health SDK file are not in this public repository. They are read
+      # from the owner's private repository with the secret PRIVATE_FILES_TOKEN (a fine-grained token, contents: read
+      # on that repository only). Without them nothing is built, so a wrongly signed APK can never be published.
+      - name: Fetch private build files
+        env:
+          TOKEN: ${{ secrets.PRIVATE_FILES_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then echo "::error::secret PRIVATE_FILES_TOKEN is missing"; exit 1; fi
+          mkdir -p app/libs
+          for f in app/hamasa.keystore app/signing.properties app/libs/samsung-health-data-api-1.1.0.aar; do
+            code=$(curl -sS -L -m 120 -o "$f" -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github.raw" \
+              "https://api.github.com/repos/tamir8566/fitness_app/contents/$f")
+            if [ "$code" != "200" ]; then echo "::error::could not fetch $f (HTTP $code)"; rm -f "$f"; exit 1; fi
+          done
+          ls -la app/hamasa.keystore app/libs
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Flow tests (thread dump when stuck)
+        timeout-minutes: 30
+        run: |
+          (./gradlew --no-daemon testDebugUnitTest --tests '${{ github.event.inputs.tests }}' -Proborazzi.test.record=true > full.log 2>&1; echo "EXIT $?" >> full.log) &
+          G=$!
+          for i in $(seq 1 26); do
+            sleep 60
+            if ! kill -0 $G 2>/dev/null; then break; fi
+            # a test JVM that printed nothing new for 3 minutes = stuck: dump its threads once
+            if [ $i -ge 8 ] && [ ! -f dumped ]; then
+              last=$(stat -c %Y full.log); now=$(date +%s)
+              if [ $((now-last)) -gt 180 ]; then
+                for p in $(jps -l | grep -i "GradleWorkerMain\|worker" | awk '{print $1}'); do jstack $p >> dump.txt 2>&1; done
+                touch dumped
+              fi
+            fi
+          done
+          kill $G 2>/dev/null || true
+          grep -E -A4 "PASSED|FAILED|SKIPPED|BUILD|e: |EXIT|flow-screen" full.log | grep -v STARTED > flows.log || true
+      - name: Report
+        if: always()
+        run: |
+          { tail -150 flows.log || echo "no flows.log"; echo; echo "----- thread dump -----"; if [ -f dump.txt ]; then python3 .github/scripts/dump_filter.py dump.txt; else echo "none (nothing hung)"; fi; } > report.txt 2>&1 || true
+          gh issue create --title "flows-only-${{ github.run_number }}" --body-file report.txt || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

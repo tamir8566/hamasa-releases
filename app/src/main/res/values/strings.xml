@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">המסע הגדול</string>
+    <string name="notif_channel_reminders">תזכורות אימון</string>
+    <string name="notif_channel_updates">עדכונים</string>
+    <string name="widget_description">הדמות, הרצף, הניסיון והקלוריות של היום</string>
+    <string name="widget_body_desc">הדמות</string>
+    <string name="widget_snap_meal">צילום ארוחה</string>
+    <string name="widget_line_label">המשפט של היום</string>
+    <string name="widget_line_description">משפט אחד מהמסע. חדש כל יום.</string>
+    <string name="widget_line_placeholder">חושבים. לאט.</string>
+</resources>

@@ -1,0 +1,11 @@
+.gradle/
+build/
+app/build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+# private build files, fetched by the workflow (never commit them here)
+app/hamasa.keystore
+app/signing.properties
+app/libs/*.aar
